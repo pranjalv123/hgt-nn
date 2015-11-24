@@ -1,6 +1,12 @@
 import dendropy
 import subprocess
 import numpy
+from ASTRID import ASTRID
+
+#you need ASTRID, which can be installed with
+# pip install astrid-phylo
+#and fasttree, which can be gotten from apt-get or at
+#http://meta.microbesonline.org/fasttree/
 
 def get_desc_edges(t, n):
     desc = set()
@@ -86,5 +92,60 @@ class Simhgt(object):
             self.esttrees.append(dendropy.Tree.get_from_string(tree, 'newick'))
             
             
-        
-        
+def gen_test_data(file=None, seed=None, nreps=50, ntaxa=15, ngenes=1000):
+    if seed:
+        numpy.random.seed(seed)
+        dendropy.utility.GLOBAL_RNG.seed(seed)
+    if file:
+        sh = Simhgt(dendropy.Tree.get_from_file(file, 'newick'))
+    else:
+        stree = dendropy.simulate.treesim.birth_death_tree(birth_rate=1.0, death_rate=0.5, ntax=ntaxa)
+        sh = Simhgt(stree)
+
+
+    egts = []
+    tgts = []
+    seqs = []
+    hgts = []
+    
+    for i in range(nreps):
+        sh.simgtrees(nhgt=ngenes, nils=1)
+        sh.estgtrees()
+        egts.append(sh.esttrees)
+        tgts.append(sh.truetrees)
+        seqs.append(sh.seqs)
+        hgts.append(sh.hgtevents)
+    return tgts, egts, seqs, hgts, sh.stree
+
+
+
+def pipeline(truetrees, esttrees,  seqs, hgtevents, stree, learner=None):
+    ast = ASTRID(esttrees)
+    ast.run('auto')
+    estspeciestree = ast.tree
+
+    print str(stree)
+    
+    estspeciestree.migrate_taxon_namespace(stree.taxon_namespace)
+
+    print str(estspeciestree)
+    
+    print "RF distance", (dendropy.treecalc.treecompare.false_positives_and_negatives(estspeciestree, stree)), len(stree.internal_edges())
+
+    sim = Simhgt(estspeciestree)
+    
+    
+    sim.simgtrees(seqlen=20, nhgt=10, nils=10)
+    sim.estgtrees()
+    if not learner:
+        return
+    traintrees = sim.truetrees + sim.esttrees
+    trainhgts = sim.hgtevents + sim.hgtevents
+    
+    learner.train(traintrees, trainhgts)
+
+    estimated_hgts = learner.get(esttrees)
+    return estimated_hgts
+
+
+    
