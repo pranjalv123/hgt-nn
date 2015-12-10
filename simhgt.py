@@ -68,7 +68,7 @@ class Simhgt(object):
         for i in range(nhgt):
             ltree, c1, c2  = self.dorandomhgt()
             gtrees.append(ltree)
-            
+            hgtevents.append((c1, c2))            
             for i in range(nils):
                 gene_to_species_map = dendropy.TaxonNamespaceMapping.create_contained_taxon_mapping(containing_taxon_namespace=ltree.taxon_namespace, num_contained=1, contained_taxon_label_fn = lambda a,b:a)
                 gtree = dendropy.simulate.treesim.contained_coalescent_tree(ltree, gene_to_containing_taxon_map=gene_to_species_map)
@@ -92,7 +92,7 @@ class Simhgt(object):
             self.esttrees.append(dendropy.Tree.get_from_string(tree, 'newick'))
             
             
-def gen_test_data(file=None, seed=None, nreps=50, ntaxa=15, ngenes=1000):
+def gen_test_data(file=None, seed=None, nreps=50, ntaxa=15, ngenes=1000, seqlen=100):
     if seed:
         numpy.random.seed(seed)
         dendropy.utility.GLOBAL_RNG.seed(seed)
@@ -109,7 +109,7 @@ def gen_test_data(file=None, seed=None, nreps=50, ntaxa=15, ngenes=1000):
     hgts = []
     
     for i in range(nreps):
-        sh.simgtrees(nhgt=ngenes, nils=1)
+        sh.simgtrees(nhgt=ngenes, nils=1, seqlen=seqlen)
         sh.estgtrees()
         egts.append(sh.esttrees)
         tgts.append(sh.truetrees)
@@ -118,6 +118,10 @@ def gen_test_data(file=None, seed=None, nreps=50, ntaxa=15, ngenes=1000):
     return tgts, egts, seqs, hgts, sh.stree
 
 
+
+from sklearn import svm, ensemble
+from tree2vec import tree2vec
+import scipy
 
 def pipeline(truetrees, esttrees,  seqs, hgtevents, stree, learner=None):
     ast = ASTRID(esttrees)
@@ -135,17 +139,71 @@ def pipeline(truetrees, esttrees,  seqs, hgtevents, stree, learner=None):
     sim = Simhgt(estspeciestree)
     
     
-    sim.simgtrees(seqlen=20, nhgt=10, nils=10)
+    sim.simgtrees(seqlen=20, nhgt=100, nils=10)
     sim.estgtrees()
-    if not learner:
-        return
+    
+
     traintrees = sim.truetrees + sim.esttrees
     trainhgts = sim.hgtevents + sim.hgtevents
-    
-    learner.train(traintrees, trainhgts)
 
-    estimated_hgts = learner.get(esttrees)
+    tn = traintrees[0].taxon_namespace
+    
+    traintrees = [tree2vec(i) for i in traintrees]
+    esttrees = [tree2vec(i) for i in esttrees]
+
+    trainmat = scipy.sparse.csr_matrix((2**len(tn), len(traintrees)))
+    estmat = scipy.sparse.csr_matrix((2**len(tn), len(esttrees)))
+
+
+    trainhgtmat = scipy.sparse.csr_matrix((2**len(tn) * 2, len(traintrees)))
+
+    trainhgtlist1 = numpy.array([i[0] for i in trainhgts])
+    trainhgtlist2 = numpy.array([i[1] for i in trainhgts])
+    
+    for i, hgt in enumerate(trainhgts):
+        trainhgtmat[hgt[0], i] = 1
+        trainhgtmat[hgt[1] + len(tn), i] = 1
+    
+    
+    for i, j in enumerate(traintrees):
+        trainmat[j, i] = 1
+    for i, j in enumerate(esttrees):
+        estmat[j, i] = 1
+
+    trainmat = trainmat.T
+    estmat = estmat.T
+    trainhgtmat = trainhgtmat.T
+    
+    print trainmat.shape
+    print trainhgtmat.shape
+    print estmat.shape
+    learner.fit(trainmat, trainhgtlist1)
+
+    estimated_hgts = learner.predict(estmat)
+    print estimated_hgts
+    print learner
     return estimated_hgts
 
 
-    
+def run(ngenes=50, ntaxa=5):
+    testdata = gen_test_data(ntaxa=ntaxa, ngenes=ngenes, nreps=1)
+
+#    learner = ensemble.RandomForestClassifier(n_estimators=100)
+    learner = svm.SVC()
+
+    ehgt = pipeline(testdata[0][0], testdata[1][0], testdata[2][0], testdata[3][0], testdata[4], learner = learner)
+
+    print ehgt
+
+    print testdata[3]
+    sources = [i[0] for i in testdata[3][0]]
+
+    print sources
+
+    for i in zip(ehgt, sources):
+        print i
+
+    return zip(ehgt, sources)
+
+if __name__ == "__main__":
+    run()
